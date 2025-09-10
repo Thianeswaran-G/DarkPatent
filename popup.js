@@ -36,25 +36,37 @@ class PopupController {
       tab.addEventListener('click', () => this.switchTab(tab.dataset.tab));
     });
 
-    document.getElementById('scanPageBtn').addEventListener('click', this.scanPage.bind(this));
-    document.getElementById('clearAlertsBtn').addEventListener('click', this.clearAlerts.bind(this));
-    document.getElementById('exportDataBtn').addEventListener('click', this.exportData.bind(this));
-    document.getElementById('settingsBtn').addEventListener('click', () => this.switchTab('settings'));
-    document.getElementById('breachCheckBtn').addEventListener('click', this.checkBreaches.bind(this));
+    const scanBtn = document.getElementById('scanPageBtn');
+    if (scanBtn) scanBtn.addEventListener('click', this.scanPage.bind(this));
+
+    const clearBtn = document.getElementById('clearAlertsBtn');
+    if (clearBtn) clearBtn.addEventListener('click', this.clearAlerts.bind(this));
+
+    const exportBtn = document.getElementById('exportDataBtn');
+    if (exportBtn) exportBtn.addEventListener('click', this.exportData.bind(this));
+
+    const settingsBtn = document.getElementById('settingsBtn');
+    if (settingsBtn) settingsBtn.addEventListener('click', () => this.switchTab('settings'));
+
+    const breachBtn = document.getElementById('breachCheckBtn');
+    if (breachBtn) breachBtn.addEventListener('click', this.checkBreaches.bind(this));
 
     document.querySelectorAll('.toggle-switch').forEach(toggle => {
-      toggle.addEventListener('click', e => {
+      toggle.addEventListener('click', () => {
         const setting = toggle.dataset.setting;
         const enabled = toggle.classList.toggle('active');
         this.updateSetting(setting, enabled);
       });
     });
 
-    document.getElementById('alertLevelSelect').addEventListener('change', e => {
-      this.updateSetting('alertLevel', e.target.value);
-    });
+    const alertLevelSelect = document.getElementById('alertLevelSelect');
+    if (alertLevelSelect) {
+      alertLevelSelect.value = this.settings.alertLevel || 'medium';
+      alertLevelSelect.addEventListener('change', e => this.updateSetting('alertLevel', e.target.value));
+    }
 
-    document.getElementById('resetSettingsBtn').addEventListener('click', this.resetSettings.bind(this));
+    const resetBtn = document.getElementById('resetSettingsBtn');
+    if (resetBtn) resetBtn.addEventListener('click', this.resetSettings.bind(this));
   }
 
   switchTab(tabName) {
@@ -69,53 +81,62 @@ class PopupController {
   }
 
   updateUI() {
-    document.getElementById('protectionStatus').textContent = this.settings.realTimeScanning ? 'ACTIVE' : 'DISABLED';
-    document.getElementById('protectionStatus').style.color = this.settings.realTimeScanning ? '#4CAF50' : '#f44336';
-    document.getElementById('alertCount').textContent = this.alerts.length;
-    document.getElementById('sitesScanned').textContent = this.stats.sitesScanned;
-    document.getElementById('alertLevelSelect').value = this.settings.alertLevel;
+    const protectionStatus = document.getElementById('protectionStatus');
+    if (protectionStatus) {
+      protectionStatus.textContent = this.settings.realTimeScanning ? 'ACTIVE' : 'DISABLED';
+      protectionStatus.style.color = this.settings.realTimeScanning ? '#4CAF50' : '#f44336';
+    }
+
+    const alertCount = document.getElementById('alertCount');
+    if (alertCount) alertCount.textContent = this.alerts.length;
+
+    const sitesScanned = document.getElementById('sitesScanned');
+    if (sitesScanned) sitesScanned.textContent = this.stats.sitesScanned;
 
     document.querySelectorAll('.toggle-switch').forEach(toggle => {
       const setting = toggle.dataset.setting;
-      toggle.classList.toggle('active', !!this.settings[setting]);
+      if (this.settings[setting]) {
+        toggle.classList.add('active');
+      } else {
+        toggle.classList.remove('active');
+      }
     });
-  }
 
-  async updateSetting(key, value) {
-    this.settings[key] = value;
-    await chrome.storage.local.set({ settings: this.settings });
-    chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', settings: this.settings });
-    this.updateUI();
+    const alertLevelSelect = document.getElementById('alertLevelSelect');
+    if (alertLevelSelect) alertLevelSelect.value = this.settings.alertLevel || 'medium';
   }
 
   renderAlerts() {
     const container = document.getElementById('alertsList');
+    if (!container) return;
+
     if (this.alerts.length === 0) {
       container.innerHTML = '<div class="empty-state"><div class="empty-icon">🔒</div>No alerts</div>';
       return;
     }
+    
     container.innerHTML = this.alerts.map(alert => `
       <div class="alert-item">
-        <strong>${this.formatAlertType(alert.type)}</strong> - ${this.formatTime(alert.timestamp)}<br>
+        <strong>${this.formatAlertType(alert.type)}</strong> - ${this.formatTime(alert.timestamp)}<br />
         ${this.formatAlertMessage(alert)}
         <button class="dismissBtn" data-id="${alert.id}">Dismiss</button>
-      </div>
-    `).join('');
-    container.querySelectorAll('.dismissBtn').forEach(btn => {
-      btn.addEventListener('click', e => this.dismissAlert(e.target.dataset.id));
-    });
+      </div>`).join('');
+    
+    container.querySelectorAll('.dismissBtn').forEach(btn =>
+      btn.addEventListener('click', e => this.dismissAlert(e.target.dataset.id))
+    );
   }
 
   formatAlertType(type) {
-    return type.replace('_', ' ').toUpperCase();
+    return type.replace(/_/g, ' ').toUpperCase();
   }
 
   formatTime(ts) {
     const diff = (Date.now() - ts) / 1000;
-    if (diff < 60) return `${Math.floor(diff)} sec ago`;
-    if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)} hr ago`;
-    return `${Math.floor(diff / 86400)} day(s) ago`;
+    if (diff < 60) return `${Math.floor(diff)} seconds ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)} minutes ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
+    return `${Math.floor(diff / 86400)} days ago`;
   }
 
   formatAlertMessage(alert) {
@@ -127,72 +148,113 @@ class PopupController {
       case 'breach_detected':
         return `Email found in ${alert.count} breach(es).`;
       default:
-        return 'Security alert';
+        return alert.message || 'Security alert detected.';
     }
   }
 
   async dismissAlert(id) {
     this.alerts = this.alerts.filter(a => a.id != id);
     await chrome.storage.local.set({ alerts: this.alerts });
-    chrome.runtime.sendMessage({ type: 'CLEAR_ALERT', alertId: id });
+    try {
+      await chrome.runtime.sendMessage({ type: 'CLEAR_ALERT', alertId: id });
+    } catch (e) {
+      console.warn('Clear alert message failed:', e);
+    }
     this.renderAlerts();
     this.updateUI();
   }
 
   async scanPage() {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    chrome.tabs.sendMessage(tab.id, { type: 'SCAN_PAGE' });
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.id) {
+        alert("No valid web page is active for scanning.");
+        return;
+      }
+      if (!tab.url.startsWith("http")) {
+        alert("Scanning works only on normal web pages.");
+        return;
+      }
+      const response = await chrome.tabs.sendMessage(tab.id, { type: 'SCAN_PAGE' });
+      console.log('Scan message response:', response);
+    } catch (e) {
+      console.error('Error sending scan message:', e);
+      alert("Failed to scan: content script not reachable.");
+    }
   }
 
   async clearAlerts() {
     this.alerts = [];
     await chrome.storage.local.set({ alerts: [] });
-    chrome.runtime.sendMessage({ type: 'CLEAR_ALL_ALERTS' });
+    try {
+      await chrome.runtime.sendMessage({ type: 'CLEAR_ALL_ALERTS' });
+    } catch (e) {
+      console.warn('Clear all alerts message failed:', e);
+    }
     this.renderAlerts();
     this.updateUI();
   }
 
   async exportData() {
-    const data = JSON.stringify({
-      alerts: this.alerts,
-      settings: this.settings,
-      exportedAt: new Date().toISOString()
-    }, null, 2);
+    try {
+      const data = JSON.stringify({
+        alerts: this.alerts,
+        settings: this.settings,
+        exportedAt: new Date().toISOString()
+      }, null, 2);
 
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-
-    chrome.downloads.download({
-      url, filename: `secureguard_data_${Date.now()}.json`
-    });
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      await chrome.downloads.download({
+        url,
+        filename: `secureguard_export_${Date.now()}.json`,
+        saveAs: true
+      });
+    } catch (e) {
+      console.error('Error exporting data:', e);
+    }
   }
 
   async checkBreaches() {
-    const email = document.getElementById('breachEmail').value;
-    if (!email) {
-      this.showBreachResult('Enter a valid email address.');
+    const emailInput = document.getElementById('breachEmail');
+    if (!emailInput) {
+      alert("Internal error: email input not found.");
       return;
     }
-
-    this.showBreachResult('Checking...');
+    const email = emailInput.value.trim();
+    if (!email || !email.includes('@')) {
+      alert("Please enter a valid email address.");
+      return;
+    }
     try {
       const response = await chrome.runtime.sendMessage({ type: 'CHECK_BREACH', email });
-      if (response.error) {
-        this.showBreachResult('Error checking breaches.');
-      } else if (response.breached) {
-        this.showBreachResult(`Found in ${response.count} breaches: ${response.breaches.map(b => b.Name).join(', ')}`, true);
+      const breachResult = document.getElementById('breachResult');
+      if (response?.error) {
+        breachResult.textContent = 'Error checking breach.';
+        breachResult.style.color = '#f44336';
+      } else if (response?.breached) {
+        const names = response.breaches.map(b => b.Name).join(', ');
+        breachResult.textContent = `Found in breaches: ${names}`;
+        breachResult.style.color = '#f44336';
       } else {
-        this.showBreachResult('No breaches found.', false);
+        breachResult.textContent = 'No breaches found.';
+        breachResult.style.color = '#4CAF50';
       }
-    } catch {
-      this.showBreachResult('Error checking breaches.');
+    } catch (e) {
+      alert("Error checking breach status.");
+      console.error("Check breach error:", e);
     }
   }
 
-  showBreachResult(msg, isWarning) {
-    const container = document.getElementById('breachResult');
-    container.textContent = msg;
-    container.style.color = isWarning ? '#f44336' : '#4CAF50';
+  async updateSetting(key, value) {
+    this.settings[key] = value;
+    await chrome.storage.local.set({ settings: this.settings });
+    try {
+      await chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', settings: this.settings });
+    } catch (e) {
+      console.warn("Update settings message failed:", e);
+    }
+    this.updateUI();
   }
 
   async resetSettings() {
@@ -201,10 +263,14 @@ class PopupController {
       darkWebScanning: true,
       autoBlock: false,
       notifications: true,
-      alertLevel: 'medium',
+      alertLevel: 'medium'
     };
     await chrome.storage.local.set({ settings: this.settings });
-    chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', settings: this.settings });
+    try {
+      await chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', settings: this.settings });
+    } catch (e) {
+      console.warn("Reset settings message failed:", e);
+    }
     this.updateUI();
   }
 
@@ -221,11 +287,4 @@ let popup;
 
 document.addEventListener('DOMContentLoaded', () => {
   popup = new PopupController();
-
-  // Expose global functions if needed by onclick in HTML (avoid if possible)
-  window.scanPage = () => popup.scanPage();
-  window.clearAlerts = () => popup.clearAlerts();
-  window.exportData = () => popup.exportData();
-  window.openSettings = () => popup.switchTab('settings');
-  window.checkBreaches = () => popup.checkBreaches();
 });

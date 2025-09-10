@@ -12,6 +12,9 @@
     "downloads"
   ],
   "host_permissions": [
+    "file:///*",
+    "http://*/*",
+    "https://*/*",
     "https://haveibeened.com/*",
     "https://safebrowsing.googleapis.com/*",
     "https://www.phishtank.com/*"

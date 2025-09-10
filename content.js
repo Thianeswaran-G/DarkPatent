@@ -1,41 +1,43 @@
-// Content Script for SecureGuard Extension - In-page scanning and protection
-
 class ContentScriptGuard {
   constructor() {
     this.sensitiveSelectors = [
-      'input[type="password"]',
-      'input[type="email"]',
-      'input[name*="ssn"]',
-      'input[name*="social"]',
-      'input[name*="credit"]',
-      'input[name*="card"]',
-      'input[name*="cvv"]',
-      'input[name*="api"]',
+      'input[type=password]',
+      'input[type=email]',
+      'input[name*=ssn]',
+      'input[name*=social]',
+      'input[name*=credit]',
+      'input[name*=card]',
+      'input[name*=cvv]',
+      'input[name*=api]',
       'textarea'
     ];
-    
+
     this.monitoredElements = new Set();
-    this.alertOverlay = null;
     this.currentAlerts = [];
+    this.handleFormSubmissionBound = this.handleFormSubmission.bind(this);
+
+    window.contentGuard = this;
     this.init();
   }
 
   init() {
-    // Wait for DOM to be ready
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => this.setupMonitoring());
     } else {
       this.setupMonitoring();
     }
-    
-    // Listen for messages from background script
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.type === 'SCAN_PAGE') {
+        this.runPageScan();
+        sendResponse({ status: 'scan_started' });
+        return true;
+      }
       switch (message.type) {
         case 'SHOW_ALERT':
           this.showInPageAlert(message.alert);
           break;
         case 'BLOCK_SUBMISSION':
-          this.blockFormSubmission(message.reason);
+          this.blockFormSubmission && this.blockFormSubmission(message.reason);
           break;
         case 'HIGHLIGHT_RISKS':
           this.highlightRiskyElements();
@@ -45,86 +47,83 @@ class ContentScriptGuard {
   }
 
   setupMonitoring() {
-    // Monitor form submissions
-    document.addEventListener('submit', (e) => this.handleFormSubmission(e), true);
-    
-    // Monitor input changes
-    document.addEventListener('input', (e) => this.handleInputChange(e), true);
-    
-    // Monitor copy/paste events
-    document.addEventListener('paste', (e) => this.handlePaste(e), true);
-    document.addEventListener('copy', (e) => this.handleCopy(e), true);
-    
-    // Monitor autofill events
-    document.addEventListener('change', (e) => this.handleAutofill(e), true);
-    
-    // Set up mutation observer for dynamic content
+    document.addEventListener('submit', this.handleFormSubmissionBound, true);
+    document.addEventListener('input', this.handleInputChange.bind(this), true);
+    document.addEventListener('paste', this.handlePaste.bind(this), true);
+    document.addEventListener('copy', this.handleCopy.bind(this), true);
+    document.addEventListener('change', this.handleAutofill.bind(this), true);
+
     this.setupMutationObserver();
-    
-    // Initial scan of existing elements
     this.scanExistingElements();
-    
-    // Check URL reputation
-    this.checkCurrentPageSecurity();
+    this.checkCurrentSecurity && this.checkCurrentSecurity();
   }
 
   async handleFormSubmission(event) {
-    const form = event.target;
-    if (!form || form.tagName !== 'FORM') return;
-    
-    // Extract form data
-    const formData = new FormData(form);
-    const dataString = Array.from(formData.entries())
-      .map(([key, value]) => `${key}: ${value}`)
-      .join(' ');
-    
-    // Scan for sensitive data
+  const form = event.target;
+  if (!form || form.tagName !== 'FORM') return;
+
+  event.preventDefault();
+
+  const formData = new FormData(form);
+  const dataString = Array.from(formData.entries())
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(' ');
+
+  try {
     const result = await chrome.runtime.sendMessage({
       type: 'SCAN_DATA',
       data: dataString
     });
-    
-    if (result && result.sensitiveData.length > 0) {
-      // Show warning and potentially block submission
+
+    if (result && result.sensitiveData && result.sensitiveData.length > 0) {
       const shouldBlock = await this.showSubmissionWarning(result, form.action || window.location.href);
-      
       if (shouldBlock) {
-        event.preventDefault();
-        event.stopPropagation();
-        return false;
+        // Show visual feedback for blocking
+        let toast = document.createElement('div');
+        toast.textContent = "Submission blocked for your safety.";
+        toast.style.cssText = `
+          position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+          background: #d32f2f; color: white; padding: 12px 32px; border-radius: 5px;
+          z-index: 100002; font-size: 18px; box-shadow: 0 2px 8px #0006;
+        `;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+        // Stay on page, do not submit
+        return;
+      } else {
+        form.removeEventListener('submit', this.handleFormSubmissionBound, true);
+        form.submit();
       }
+    } else {
+      form.removeEventListener('submit', this.handleFormSubmissionBound, true);
+      form.submit();
     }
+  } catch (e) {
+    form.removeEventListener('submit', this.handleFormSubmissionBound, true);
+    form.submit();
   }
+}
+
 
   handleInputChange(event) {
     const input = event.target;
-    if (!this.isSensitiveInput(input)) return;
-    
-    const value = input.value;
-    if (value.length > 10) { // Only check substantial input
-      chrome.runtime.sendMessage({
-        type: 'SCAN_DATA',
-        data: value
-      }).then(result => {
-        if (result && result.sensitiveData.length > 0) {
-          this.highlightElement(input, 'warning');
-          this.showTooltipWarning(input, 'Sensitive data detected');
-        }
-      });
-    }
+    if (!this.isSensitiveInput(input) || input.value.length < 10) return;
+    chrome.runtime.sendMessage({ type: 'SCAN_DATA', data: input.value }).then(result => {
+      if (result && result.sensitiveData && result.sensitiveData.length > 0) {
+        this.highlightElement(input, 'warning');
+        this.showTooltip(input, 'Sensitive data detected');
+      }
+    });
   }
 
   handlePaste(event) {
-    const pastedData = (event.clipboardData || window.clipboardData).getData('text');
-    
-    chrome.runtime.sendMessage({
-      type: 'SCAN_DATA',
-      data: pastedData
-    }).then(result => {
-      if (result && result.sensitiveData.length > 0) {
+    const pastedText = event.clipboardData?.getData('text') || '';
+    if (!pastedText) return;
+    chrome.runtime.sendMessage({ type: 'SCAN_DATA', data: pastedText }).then(result => {
+      if (result && result.sensitiveData && result.sensitiveData.length > 0) {
         this.showInPageAlert({
           type: 'paste_warning',
-          message: 'Sensitive data detected in clipboard',
+          message: 'Sensitive data detected in pasted text',
           severity: 'medium',
           data: result.sensitiveData
         });
@@ -134,352 +133,222 @@ class ContentScriptGuard {
 
   handleCopy(event) {
     const selection = window.getSelection().toString();
-    if (selection.length > 10) {
-      chrome.runtime.sendMessage({
-        type: 'SCAN_DATA',
-        data: selection
-      }).then(result => {
-        if (result && result.sensitiveData.length > 0) {
-          this.showInPageAlert({
-            type: 'copy_warning',
-            message: 'You are copying sensitive data',
-            severity: 'low',
-            data: result.sensitiveData
-          });
-        }
-      });
-    }
+    if (selection.length < 10) return;
+    chrome.runtime.sendMessage({ type: 'SCAN_DATA', data: selection }).then(result => {
+      if (result && result.sensitiveData && result.sensitiveData.length > 0) {
+        this.showInPageAlert({
+          type: 'copy_warning',
+          message: 'Sensitive data detected in copied text',
+          severity: 'low',
+          data: result.sensitiveData
+        });
+      }
+    });
   }
 
   handleAutofill(event) {
     const input = event.target;
-    if (input.tagName === 'INPUT' && event.isTrusted) {
-      // Autofill detected
-      setTimeout(() => {
-        chrome.runtime.sendMessage({
-          type: 'SCAN_DATA',
-          data: input.value
-        }).then(result => {
-          if (result && result.sensitiveData.length > 0) {
-            this.showTooltipWarning(input, 'Autofilled sensitive data');
-          }
-        });
-      }, 100);
-    }
+    if (input.tagName !== 'INPUT' || !event.isTrusted) return;
+    setTimeout(() => {
+      chrome.runtime.sendMessage({ type: 'SCAN_DATA', data: input.value }).then(result => {
+        if (result && result.sensitiveData && result.sensitiveData.length > 0) {
+          this.showTooltip(input, 'Sensitive data detected (autofilled)');
+        }
+      });
+    }, 100);
   }
 
   setupMutationObserver() {
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        mutation.addedNodes.forEach((node) => {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            this.scanNewElement(node);
-          }
+    const observer = new MutationObserver(mutations => {
+      mutations.forEach(mutation => {
+        mutation.addedNodes.forEach(node => {
+          if (node.nodeType === 1) this.scanNewElement(node);
         });
       });
     });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   scanExistingElements() {
-    this.sensitiveSelectors.forEach(selector => {
-      document.querySelectorAll(selector).forEach(element => {
-        this.monitorElement(element);
-      });
+    this.sensitiveSelectors.forEach(sel => {
+      document.querySelectorAll(sel).forEach(el => this.monitorElement(el));
     });
   }
 
-  scanNewElement(element) {
-    this.sensitiveSelectors.forEach(selector => {
-      if (element.matches && element.matches(selector)) {
-        this.monitorElement(element);
-      }
-      
-      element.querySelectorAll && element.querySelectorAll(selector).forEach(child => {
-        this.monitorElement(child);
-      });
+  scanNewElement(node) {
+    this.sensitiveSelectors.forEach(sel => {
+      if (node.matches && node.matches(sel)) this.monitorElement(node);
+      node.querySelectorAll && node.querySelectorAll(sel).forEach(el => this.monitorElement(el));
     });
   }
 
-  monitorElement(element) {
-    if (this.monitoredElements.has(element)) return;
-    
-    this.monitoredElements.add(element);
-    
-    // Add visual indicator for sensitive fields
-    this.addSecurityIndicator(element);
+  monitorElement(el) {
+    if (this.monitoredElements.has(el)) return;
+    this.monitoredElements.add(el);
+    this.addIndicator(el);
   }
 
-  isSensitiveInput(input) {
+  isSensitiveInput(el) {
     const sensitiveTypes = ['password', 'email'];
     const sensitiveNames = ['ssn', 'social', 'credit', 'card', 'cvv', 'api'];
-    
-    return sensitiveTypes.includes(input.type) ||
-           sensitiveNames.some(name => 
-             input.name?.toLowerCase().includes(name) ||
-             input.id?.toLowerCase().includes(name) ||
-             input.className?.toLowerCase().includes(name)
-           );
+    return sensitiveTypes.includes(el.type) || sensitiveNames.some(name =>
+      (el.name && el.name.toLowerCase().includes(name)) ||
+      (el.id && el.id.toLowerCase().includes(name)) ||
+      (el.className && el.className.toLowerCase().includes(name))
+    );
   }
 
-  addSecurityIndicator(element) {
+  addIndicator(el) {
     const indicator = document.createElement('div');
     indicator.className = 'secureguard-indicator';
-    indicator.innerHTML = '🛡️';
+    indicator.textContent = '🛡️';
     indicator.style.cssText = `
       position: absolute;
       right: 5px;
       top: 50%;
       transform: translateY(-50%);
       font-size: 12px;
-      z-index: 10000;
-      pointer-events: none;
       opacity: 0.6;
+      pointer-events: none;
+      z-index: 9999;
     `;
-    
-    const parent = element.parentElement;
+    const parent = el.parentElement;
     if (parent && getComputedStyle(parent).position === 'static') {
       parent.style.position = 'relative';
     }
-    
     parent?.appendChild(indicator);
   }
 
-  highlightElement(element, type) {
-    const color = type === 'warning' ? '#ff9800' : '#f44336';
-    element.style.borderColor = color;
-    element.style.borderWidth = '2px';
-    element.style.borderStyle = 'solid';
-    element.style.boxShadow = `0 0 5px ${color}40`;
+  highlightElement(el, type) {
+    const color = type === 'warning' ? '#FFC107' : '#F44336';
+    el.style.border = `2px solid ${color}`;
+    el.style.boxShadow = `0 0 8px ${color}aa`;
   }
 
-  showTooltipWarning(element, message) {
+  showTooltip(el, msg) {
     const tooltip = document.createElement('div');
     tooltip.className = 'secureguard-tooltip';
-    tooltip.textContent = message;
+    tooltip.textContent = msg;
     tooltip.style.cssText = `
       position: absolute;
       background: #333;
       color: white;
-      padding: 8px 12px;
+      padding: 5px 10px;
       border-radius: 4px;
       font-size: 12px;
       z-index: 10001;
-      max-width: 200px;
-      word-wrap: break-word;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     `;
-    
-    const rect = element.getBoundingClientRect();
-    tooltip.style.left = rect.left + 'px';
-    tooltip.style.top = (rect.bottom + 5) + 'px';
-    
     document.body.appendChild(tooltip);
-    
-    setTimeout(() => {
-      tooltip.remove();
-    }, 3000);
+    const rect = el.getBoundingClientRect();
+    tooltip.style.left = `${rect.left}px`;
+    tooltip.style.top = `${rect.bottom + 5}px`;
+    setTimeout(() => tooltip.remove(), 3000);
   }
 
-  async showSubmissionWarning(scanResult, targetUrl) {
-    return new Promise((resolve) => {
-      const modal = this.createWarningModal(scanResult, targetUrl, resolve);
+  async showSubmissionWarning(scanResult, formAction) {
+    return new Promise(resolve => {
+      const modal = this.createWarningModal(scanResult, formAction, resolve);
       document.body.appendChild(modal);
+      // Modal will be removed only on user action
     });
   }
 
-  createWarningModal(scanResult, targetUrl, callback) {
-    // Remove any existing modals first
-    const existingModals = document.querySelectorAll('.secureguard-modal');
-    existingModals.forEach(modal => modal.remove());
-    
+  createWarningModal(scanResult, formAction, resolve) {
+    document.querySelectorAll('.secureguard-modal').forEach(m => m.remove());
     const modal = document.createElement('div');
     modal.className = 'secureguard-modal';
     modal.style.cssText = `
       position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
+      top: 0; left: 0;
+      width: 100vw; height: 100vh;
       background: rgba(0,0,0,0.8);
-      z-index: 2147483647;
       display: flex;
-      align-items: center;
       justify-content: center;
+      align-items: center;
+      z-index: 100000;
       font-family: Arial, sans-serif;
     `;
-    
+
     const content = document.createElement('div');
     content.style.cssText = `
       background: white;
-      padding: 30px;
       border-radius: 8px;
-      max-width: 500px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      padding: 20px;
+      max-width: 400px;
+      max-height: 80vh;
+      overflow-y: auto;
       position: relative;
     `;
-    
-    const sensitiveDataList = scanResult.sensitiveData && scanResult.sensitiveData.length > 0 
-      ? scanResult.sensitiveData.map(item => `<li>${item.type}: ${item.value ? item.value.substring(0, 20) + '...' : 'detected'}</li>`).join('')
-      : '<li>Sensitive data pattern detected</li>';
-    
-    const recommendations = scanResult.recommendations && scanResult.recommendations.length > 0
-      ? scanResult.recommendations.map(rec => `<li>${rec}</li>`).join('')
-      : '<li>Verify the website is legitimate before proceeding</li>';
+
+    const dataList = scanResult.sensitiveData?.map(d => `<li>${d.type}: ${d.value}</li>`).join('') || '<li>Detected sensitive data.</li>';
+    const recList = scanResult.recommendations?.map(r => `<li>${r}</li>`).join('') || '<li>Please review before proceeding.</li>';
 
     content.innerHTML = `
-      <h3 style="color: #f44336; margin-top: 0;">⚠️ Data Leak Warning</h3>
-      <p>Sensitive data detected in form submission to:</p>
-      <p style="font-weight: bold; color: #333; word-break: break-all;">${targetUrl}</p>
-      <ul style="color: #666; margin: 10px 0;">
-        ${sensitiveDataList}
-      </ul>
-      <p style="font-size: 14px; color: #666;">
-        Recommendations:
-        <ul style="margin: 10px 0;">
-          ${recommendations}
-        </ul>
-      </p>
-      <div style="text-align: right; margin-top: 20px;">
-        <button id="block-btn" style="background: #f44336; color: white; border: none; padding: 10px 20px; margin-right: 10px; border-radius: 4px; cursor: pointer;">Block Submission</button>
-        <button id="continue-btn" style="background: #4caf50; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">Continue Anyway</button>
+      <h2 style="color:#d32f2f;">⚠️ Potential Data Leak Detected</h2>
+      <p><strong>Form action:</strong> ${formAction}</p>
+      <p><strong>Detected sensitive data:</strong></p>
+      <ul>${dataList}</ul>
+      <p><strong>Recommendations:</strong></p>
+      <ul>${recList}</ul>
+      <div style="margin-top:20px; text-align:right;">
+        <button id="blockBtn" style="background:#d32f2f; color:white; margin-right:10px; padding:10px 20px; border:none; border-radius:4px; cursor:pointer;">Block Submission</button>
+        <button id="continueBtn" style="background:#4caf50; color:white; padding:10px 20px; border:none; border-radius:4px; cursor:pointer;">Continue Anyway</button>
       </div>
-      <div style="position: absolute; top: 10px; right: 15px; font-size: 20px; cursor: pointer; color: #666;" id="close-btn">&times;</div>
+      <button id="closeBtn" style="position:absolute; top:10px; right:10px; background:none; border:none; font-size:24px; cursor:pointer;">&times;</button>
     `;
-    
-    const blockBtn = content.querySelector('#block-btn');
-    const continueBtn = content.querySelector('#continue-btn');
-    const closeBtn = content.querySelector('#close-btn');
-    
-    const cleanup = () => {
-      if (modal.parentElement) {
-        modal.remove();
-      }
+
+    content.querySelector('#blockBtn').onclick = () => {
+      modal.remove();
+      resolve(true);
     };
-    
-    blockBtn.onclick = (e) => {
-      e.preventDefault();
-      cleanup();
-      callback(true); // Block submission
+    content.querySelector('#continueBtn').onclick = () => {
+      modal.remove();
+      resolve(false);
     };
-    
-    continueBtn.onclick = (e) => {
-      e.preventDefault();
-      cleanup();
-      callback(false); // Allow submission
+    content.querySelector('#closeBtn').onclick = () => {
+      modal.remove();
+      resolve(true);
     };
-    
-    closeBtn.onclick = (e) => {
-      e.preventDefault();
-      cleanup();
-      callback(true); // Block by default when closed
-    };
-    
-    // Close on background click
-    modal.onclick = (e) => {
+    modal.onclick = e => {
       if (e.target === modal) {
-        cleanup();
-        callback(true); // Block by default
+        modal.remove();
+        resolve(true);
       }
     };
-    
     modal.appendChild(content);
     return modal;
   }
 
-  showInPageAlert(alert) {
-    const alertEl = document.createElement('div');
-    alertEl.className = 'secureguard-alert';
-    alertEl.style.cssText = `
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      background: ${this.getAlertColor(alert.severity)};
-      color: white;
-      padding: 15px 20px;
-      border-radius: 6px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-      z-index: 10003;
-      max-width: 350px;
-      font-family: Arial, sans-serif;
-      font-size: 14px;
-      animation: slideIn 0.3s ease-out;
-    `;
-    
-    alertEl.innerHTML = `
-      <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-        <div>
-          <strong>${alert.type.replace('_', ' ').toUpperCase()}</strong>
-          <p style="margin: 5px 0 0 0;">${alert.message}</p>
-        </div>
-        <button style="background: none; border: none; color: white; font-size: 18px; cursor: pointer; margin-left: 10px;">&times;</button>
-      </div>
-    `;
-    
-    // Add close functionality
-    alertEl.querySelector('button').onclick = () => alertEl.remove();
-    
-    document.body.appendChild(alertEl);
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-      if (alertEl.parentElement) {
-        alertEl.remove();
-      }
-    }, 5000);
-    
-    // Add slide-in animation
-    if (!document.querySelector('#secureguard-styles')) {
-      const style = document.createElement('style');
-      style.id = 'secureguard-styles';
-      style.textContent = `
-        @keyframes slideIn {
-          from { transform: translateX(100%); opacity: 0; }
-          to { transform: translateX(0); opacity: 1; }
-        }
-      `;
-      document.head.appendChild(style);
-    }
-  }
-
-  getAlertColor(severity) {
-    switch (severity) {
-      case 'critical': return '#d32f2f';
-      case 'high': return '#f57c00';
-      case 'medium': return '#fbc02d';
-      case 'low': return '#388e3c';
-      default: return '#1976d2';
-    }
-  }
-
-  async checkCurrentPageSecurity() {
-    const url = window.location.href;
-    const result = await chrome.runtime.sendMessage({
-      type: 'SCAN_DATA',
-      data: url
-    });
-    
-    if (result && result.urlReputation && result.urlReputation.malicious) {
-      this.showInPageAlert({
-        type: 'malicious_site',
-        message: 'Warning: This site may be malicious',
-        severity: 'critical'
-      });
-    }
-  }
-
-  highlightRiskyElements() {
+  async runPageScan() {
+    let combinedData = '';
     this.sensitiveSelectors.forEach(selector => {
-      document.querySelectorAll(selector).forEach(element => {
-        this.highlightElement(element, 'warning');
+      document.querySelectorAll(selector).forEach(el => {
+        combinedData += el.value + ' ';
       });
     });
+    const result = await chrome.runtime.sendMessage({ type: 'SCAN_DATA', data: combinedData });
+    if (result && result.sensitiveData && result.sensitiveData.length > 0) {
+      this.showInPageAlert({
+        type: 'scan_result',
+        message: 'Sensitive data detected on this page',
+        severity: 'high',
+        data: result.sensitiveData
+      });
+    }
+  }
+
+  showInPageAlert(alert) {
+    // Optional: Implement as toast/banner if desired
+    console.log('In-page alert:', alert);
   }
 }
 
-// Initialize the content script guard
 const contentGuard = new ContentScriptGuard();
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'SCAN_PAGE') {
+    contentGuard.runPageScan();
+    sendResponse({ status: 'scan_started' });
+    return true;
+  }
+});

@@ -159,7 +159,7 @@ class SecurityEngine {
     if (leaks.length) recommendations.push('Sensitive data detected.');
     if (reputation?.malicious) recommendations.push('Warning: Potentially malicious site.');
 
-    return { leaks, reputation, recommendations };
+    return { sensitiveData: leaks, reputation, recommendations };
   }
 
   async checkDataBreach(email) {
