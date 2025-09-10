@@ -1,0 +1,72 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "*://known-malicious-site.com/*",
+      "resourceTypes": ["main_frame", "sub_frame"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "*://phishing-site.net/*",
+      "resourceTypes": ["main_frame", "sub_frame"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 2,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "X-SecureGuard-Protected",
+          "operation": "set",
+          "value": "1"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "*",
+      "resourceTypes": ["main_frame"]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "regexFilter": ".*\\.(exe|scr|bat|cmd|com|pif|vbs|js|jar)$",
+      "resourceTypes": ["other"],
+      "domainType": "thirdParty"
+    }
+  },
+  {
+    "id": 5,
+    "priority": 3,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        {
+          "header": "X-Frame-Options",
+          "operation": "set",
+          "value": "SAMEORIGIN"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "*",
+      "resourceTypes": ["main_frame", "sub_frame"]
+    }
+  }
+]
